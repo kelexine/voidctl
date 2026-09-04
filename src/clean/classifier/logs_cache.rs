@@ -24,17 +24,13 @@ pub fn is_stale_log_file(path: &Path, metadata: &Metadata, threshold_days: u64) 
     is_older_than(metadata, threshold_days)
 }
 
-/// Checks if an entry is located in a cache or backup tree and exceeds the age threshold.
+/// Checks if an entry is located in a system temporary tree and exceeds the age threshold.
 #[must_use]
 pub fn is_stale_cache_entry(path: &Path, metadata: &Metadata, threshold_days: u64) -> bool {
     let path_str = path.to_string_lossy();
-    let is_cache_tree = path_str.contains("/.cache/")
-        || path_str.contains("/var/cache/")
-        || path_str.contains("/.dotfiles_backup/")
-        || path_str.starts_with("/tmp/")
-        || path_str.starts_with("/var/tmp/");
+    let is_temp_tree = path_str.starts_with("/tmp/") || path_str.starts_with("/var/tmp/");
 
-    if !is_cache_tree {
+    if !is_temp_tree {
         return false;
     }
 

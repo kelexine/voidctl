@@ -39,6 +39,15 @@ fn test_clean_scan_hierarchies() {
 
     let report = scan_hygiene(&clean_config);
 
+    assert!(!report.targets.is_empty());
+    let target_entry = report
+        .targets
+        .iter()
+        .find(|t| t.path == target_dir)
+        .expect("target_dir should be classified in targets");
+    assert_eq!(target_entry.category, CleanCategory::Artifacts);
+    assert!(target_entry.size_bytes >= 1024);
+
     assert!(!report.items.is_empty());
     let target_item = report
         .items

@@ -141,11 +141,45 @@ impl Default for DriftConfig {
 /// Returns default system-level and user scan roots.
 #[must_use]
 pub fn default_scan_roots() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/var/cache/pacman/pkg"),
-        PathBuf::from("/tmp"),
-        PathBuf::from("/var/tmp"),
-    ]
+    let mut roots = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(&home);
+
+        let user_cache = home_path.join(".cache");
+        if user_cache.exists() {
+            roots.push(user_cache);
+        }
+
+        let user_trash = home_path.join(".local").join("share").join("Trash");
+        if user_trash.exists() {
+            roots.push(user_trash);
+        }
+
+        let user_dev = home_path.join("dev");
+        if user_dev.exists() {
+            roots.push(user_dev);
+        }
+
+        let user_projects = home_path.join("projects");
+        if user_projects.exists() {
+            roots.push(user_projects);
+        }
+
+        let dotfiles_backup = home_path.join(".dotfiles_backup");
+        if dotfiles_backup.exists() {
+            roots.push(dotfiles_backup);
+        }
+    }
+
+    let pacman_pkg = PathBuf::from("/var/cache/pacman/pkg");
+    if pacman_pkg.exists() {
+        roots.push(pacman_pkg);
+    }
+    roots.push(PathBuf::from("/tmp"));
+    roots.push(PathBuf::from("/var/tmp"));
+
+    roots
 }
 
 /// Returns default age threshold of 7 days.

@@ -22,7 +22,9 @@ fn test_drift_symlink_comprehensive() {
     let valid_target = home.join(".validrc");
     symlink(&valid_src, &valid_target).expect("create symlink");
 
-    // 2. Broken link
+    // 2. Broken link (source exists in dotfiles, but symlink points to wrong/stale path)
+    let broken_src = dotfiles.join("brokenrc");
+    File::create(&broken_src).expect("create brokenrc");
     let broken_target = home.join(".brokenrc");
     symlink(dotfiles.join("nowhere"), &broken_target).expect("create broken symlink");
 
@@ -68,6 +70,10 @@ fn test_drift_symlink_comprehensive() {
     };
 
     assert_eq!(find_status(".validrc"), &LinkStatus::Valid);
+    assert!(matches!(
+        find_status(".brokenrc"),
+        LinkStatus::Broken { .. }
+    ));
     assert_eq!(find_status(".replacedrc"), &LinkStatus::ReplacedByRealFile);
     assert_eq!(find_status(".missingrc"), &LinkStatus::Missing);
     assert!(matches!(

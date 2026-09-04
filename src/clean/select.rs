@@ -1,12 +1,12 @@
 // Author: kelexine <https://github.com/kelexine>
 // Date: 2026-09-04
-// Purpose: Interactive multi-selection and bulk category selection for clean operations
+// Purpose: Interactive grouped target selection and fault-tolerant clean execution
 
-use crate::clean::classifier::{CleanCategory, CleanItem};
+use crate::clean::classifier::CleanTarget;
+use crate::clean::privilege::is_elevated;
 use crate::clean::walker::CleanReport;
 use humansize::{DECIMAL, format_size};
-use inquire::{Confirm, MultiSelect};
-use std::collections::HashSet;
+use inquire::MultiSelect;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
@@ -17,196 +17,193 @@ use thiserror::Error;
 pub enum CleanError {
     #[error("Interactive prompt aborted: {0}")]
     PromptAborted(String),
-    #[error("Failed to delete '{path}': {source}")]
-    DeleteFailed {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
 }
 
-/// Helper display wrapper for category bulk toggle choices.
+/// Helper display wrapper for grouped cleanup targets in multi-select prompt.
 #[derive(Clone, PartialEq, Eq)]
-struct CategoryOption {
-    category: CleanCategory,
-    count: usize,
-    size_bytes: u64,
-}
-
-impl fmt::Display for CategoryOption {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let size_str = format_size(self.size_bytes, DECIMAL);
-        write!(
-            f,
-            "All {} ({} items, {})",
-            self.category, self.count, size_str
-        )
-    }
-}
-
-/// Helper display wrapper for individual items in multi-select prompt.
-#[derive(Clone, PartialEq, Eq)]
-struct ItemOption {
+struct TargetOption {
     index: usize,
-    category: CleanCategory,
-    path: PathBuf,
-    size_bytes: u64,
+    target: CleanTarget,
 }
 
-impl fmt::Display for ItemOption {
+impl fmt::Display for TargetOption {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let size_str = format_size(self.size_bytes, DECIMAL);
+        let size_str = format_size(self.target.size_bytes, DECIMAL);
+        let elev_notice = if self.target.requires_elevation {
+            " [Requires Root]"
+        } else {
+            ""
+        };
+        let count_desc = if self.target.item_count > 1 {
+            format!(" ({} items)", self.target.item_count)
+        } else {
+            String::new()
+        };
+
         write!(
             f,
-            "[{}] {} ({})",
-            self.category,
-            self.path.display(),
-            size_str
+            "[{}] {} — {}{}{}",
+            self.target.category, self.target.title, size_str, count_desc, elev_notice
         )
     }
 }
 
-/// Executes interactive category-level and item-level selection, then deletes selected.
+/// Result summary of clean execution.
+#[derive(Debug, Default)]
+pub struct DeletionSummary {
+    pub deleted_targets: usize,
+    pub reclaimed_bytes: u64,
+    pub skipped_privilege: Vec<CleanTarget>,
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Executes interactive target selection and fault-tolerant deletion.
 pub fn interactive_select_and_clean(report: &CleanReport) -> Result<(usize, u64), CleanError> {
-    if report.items.is_empty() {
-        println!("No cleanable items found.");
+    if report.targets.is_empty() {
+        println!("No cleanable targets found.");
         return Ok((0, 0));
     }
 
-    let preselected_indices = prompt_category_bulk_selection(&report.items)?;
-    let chosen_items = prompt_item_selection(&report.items, &preselected_indices)?;
-
-    if chosen_items.is_empty() {
-        println!("No items selected. Exiting without changes.");
-        return Ok((0, 0));
-    }
-
-    let total_size: u64 = chosen_items.iter().map(|i| i.size_bytes).sum();
-    let confirmed = prompt_confirmation(chosen_items.len(), total_size)?;
-
-    if !confirmed {
-        println!("Cleanup aborted by user.");
-        return Ok((0, 0));
-    }
-
-    execute_deletions(&chosen_items)
-}
-
-/// Prompts user to select categories for bulk inclusion.
-fn prompt_category_bulk_selection(items: &[CleanItem]) -> Result<HashSet<usize>, CleanError> {
-    let options = build_category_options(items);
-    if options.is_empty() {
-        return Ok(HashSet::new());
-    }
-
-    let prompt = "Select categories to bulk-toggle (or press Enter to customize individually):";
-    let selected = MultiSelect::new(prompt, options)
-        .prompt()
-        .map_err(|e| CleanError::PromptAborted(e.to_string()))?;
-
-    let chosen_categories: HashSet<CleanCategory> =
-        selected.into_iter().map(|opt| opt.category).collect();
-
-    let preselected: HashSet<usize> = items
+    let options: Vec<TargetOption> = report
+        .targets
         .iter()
         .enumerate()
-        .filter_map(|(idx, item)| {
-            if chosen_categories.contains(&item.category) {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(preselected)
-}
-
-/// Aggregates category counts and sizes for the bulk prompt.
-fn build_category_options(items: &[CleanItem]) -> Vec<CategoryOption> {
-    let mut map: std::collections::HashMap<CleanCategory, (usize, u64)> =
-        std::collections::HashMap::new();
-
-    for item in items {
-        let entry = map.entry(item.category).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += item.size_bytes;
-    }
-
-    let mut options: Vec<CategoryOption> = map
-        .into_iter()
-        .map(|(category, (count, size_bytes))| CategoryOption {
-            category,
-            count,
-            size_bytes,
-        })
-        .collect();
-    options.sort_by_key(|opt| opt.category);
-    options
-}
-
-/// Prompts user with the full item list, pre-selecting bulk items.
-fn prompt_item_selection<'a>(
-    items: &'a [CleanItem],
-    preselected: &HashSet<usize>,
-) -> Result<Vec<&'a CleanItem>, CleanError> {
-    let options: Vec<ItemOption> = items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| ItemOption {
+        .map(|(index, target)| TargetOption {
             index,
-            category: item.category,
-            path: item.path.clone(),
-            size_bytes: item.size_bytes,
+            target: target.clone(),
         })
         .collect();
 
-    let default_indices: Vec<usize> = preselected.iter().copied().collect();
-
-    let prompt = "Confirm items to delete (Space to toggle, Enter to confirm):";
+    // Selection itself is the user commit (ADR §2.3 / scoping review)
+    let prompt = "Select cleanup targets (Space to toggle, Enter to confirm & delete):";
     let chosen_options = MultiSelect::new(prompt, options)
-        .with_default(&default_indices)
         .prompt()
         .map_err(|e| CleanError::PromptAborted(e.to_string()))?;
 
-    Ok(chosen_options
-        .into_iter()
-        .map(|opt| &items[opt.index])
-        .collect())
-}
-
-/// Confirms the deletion action with the user.
-fn prompt_confirmation(count: usize, total_size: u64) -> Result<bool, CleanError> {
-    let size_str = format_size(total_size, DECIMAL);
-    let message = format!("Permanently delete {count} selected targets (reclaiming {size_str})?");
-    Confirm::new(&message)
-        .with_default(false)
-        .prompt()
-        .map_err(|e| CleanError::PromptAborted(e.to_string()))
-}
-
-/// Deletes each selected item and returns total deleted count and reclaimed bytes.
-fn execute_deletions(items: &[&CleanItem]) -> Result<(usize, u64), CleanError> {
-    let mut deleted_count = 0;
-    let mut reclaimed_bytes: u64 = 0;
-
-    for item in items {
-        if item.is_dir {
-            if item.path.exists() {
-                fs::remove_dir_all(&item.path).map_err(|source| CleanError::DeleteFailed {
-                    path: item.path.clone(),
-                    source,
-                })?;
-            }
-        } else if item.path.exists() {
-            fs::remove_file(&item.path).map_err(|source| CleanError::DeleteFailed {
-                path: item.path.clone(),
-                source,
-            })?;
-        }
-        deleted_count += 1;
-        reclaimed_bytes += item.size_bytes;
+    if chosen_options.is_empty() {
+        println!("No targets selected. Exiting without changes.");
+        return Ok((0, 0));
     }
 
-    Ok((deleted_count, reclaimed_bytes))
+    let chosen_targets: Vec<&CleanTarget> = chosen_options
+        .iter()
+        .map(|opt| &report.targets[opt.index])
+        .collect();
+
+    let summary = execute_deletions(&chosen_targets);
+    print_deletion_summary(&summary);
+
+    Ok((summary.deleted_targets, summary.reclaimed_bytes))
+}
+
+/// Fault-tolerant deletion loop executing on selected targets.
+fn execute_deletions(targets: &[&CleanTarget]) -> DeletionSummary {
+    let mut summary = DeletionSummary::default();
+    let elevated = is_elevated();
+
+    for target in targets {
+        if target.requires_elevation && !elevated {
+            summary.skipped_privilege.push((*target).clone());
+            continue;
+        }
+
+        let mut target_deleted = false;
+        let mut target_bytes = 0;
+
+        if target.is_tree {
+            if target.path.exists() {
+                match fs::remove_dir_all(&target.path) {
+                    Ok(()) => {
+                        target_deleted = true;
+                        target_bytes = target.size_bytes;
+                    }
+                    Err(err) => {
+                        summary
+                            .failures
+                            .push((target.path.clone(), err.to_string()));
+                    }
+                }
+            }
+        } else if !target.files.is_empty() {
+            let mut file_failures = 0;
+            let mut deleted_file_bytes = 0;
+
+            for file in &target.files {
+                if file.exists() {
+                    let file_size = fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                    match fs::remove_file(file) {
+                        Ok(()) => {
+                            deleted_file_bytes += file_size;
+                        }
+                        Err(err) => {
+                            file_failures += 1;
+                            if file_failures <= 3 {
+                                summary.failures.push((file.clone(), err.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if deleted_file_bytes > 0 {
+                target_deleted = true;
+                target_bytes = deleted_file_bytes;
+            }
+        } else if target.path.exists() {
+            let res = if target.path.is_dir() {
+                fs::remove_dir_all(&target.path)
+            } else {
+                fs::remove_file(&target.path)
+            };
+
+            match res {
+                Ok(()) => {
+                    target_deleted = true;
+                    target_bytes = target.size_bytes;
+                }
+                Err(err) => {
+                    summary
+                        .failures
+                        .push((target.path.clone(), err.to_string()));
+                }
+            }
+        }
+
+        if target_deleted {
+            summary.deleted_targets += 1;
+            summary.reclaimed_bytes += target_bytes;
+        }
+    }
+
+    summary
+}
+
+/// Prints formatted outcome of deletion operations.
+fn print_deletion_summary(summary: &DeletionSummary) {
+    if summary.deleted_targets > 0 {
+        println!(
+            "✓ Successfully cleaned {} target(s), reclaiming {}.",
+            summary.deleted_targets,
+            format_size(summary.reclaimed_bytes, DECIMAL)
+        );
+    }
+
+    if !summary.skipped_privilege.is_empty() {
+        let total_skipped_size: u64 = summary.skipped_privilege.iter().map(|t| t.size_bytes).sum();
+        println!(
+            "\n⚠ Skipped {} target(s) ({}) requiring root privileges (rerun with 'sudo voidctl clean select'):",
+            summary.skipped_privilege.len(),
+            format_size(total_skipped_size, DECIMAL)
+        );
+        for t in &summary.skipped_privilege {
+            println!("  - {} ({})", t.title, t.path.display());
+        }
+    }
+
+    if !summary.failures.is_empty() {
+        println!("\n⚠ Encountered error(s) during deletion:");
+        for (path, err) in &summary.failures {
+            eprintln!("  - Failed to delete '{}': {}", path.display(), err);
+        }
+    }
 }

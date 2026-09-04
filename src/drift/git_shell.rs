@@ -63,12 +63,19 @@ pub fn parse_porcelain_output(stdout: &str) -> Vec<GitStatusEntry> {
         let index_state = chars.next().unwrap_or(' ');
         let worktree_state = chars.next().unwrap_or(' ');
         let _space = chars.next();
-        let path: String = chars.collect();
+        let raw_path: String = chars.collect();
+        let trimmed = raw_path.trim();
+        // In git porcelain format, renames appear as "R  old-path -> new-path"
+        let path = if let Some((_old, new)) = trimmed.split_once(" -> ") {
+            new.trim().to_string()
+        } else {
+            trimmed.to_string()
+        };
 
         entries.push(GitStatusEntry {
             index_state,
             worktree_state,
-            path: path.trim().to_string(),
+            path,
         });
     }
 
@@ -81,10 +88,10 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_lines() {
-        let output = " M bash/.bashrc\nM  zsh/.zshrc\n?? newfile.sh\n";
+        let output = " M bash/.bashrc\nM  zsh/.zshrc\n?? newfile.sh\nR  old.sh -> renamed.sh\n";
         let entries = parse_porcelain_output(output);
 
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].index_state, ' ');
         assert_eq!(entries[0].worktree_state, 'M');
         assert_eq!(entries[0].path, "bash/.bashrc");
@@ -96,5 +103,9 @@ mod tests {
         assert_eq!(entries[2].index_state, '?');
         assert_eq!(entries[2].worktree_state, '?');
         assert_eq!(entries[2].path, "newfile.sh");
+
+        assert_eq!(entries[3].index_state, 'R');
+        assert_eq!(entries[3].worktree_state, ' ');
+        assert_eq!(entries[3].path, "renamed.sh");
     }
 }
