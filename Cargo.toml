@@ -1,0 +1,23 @@
+[package]
+name = "voidctl"
+version = "0.1.0"
+edition = "2024"
+authors = ["kelexine <https://github.com/kelexine>"]
+description = "Unified personal operations CLI for TheVoid"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "cargo"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2.0"
+anyhow = "1.0"
+ignore = "0.4"
+inquire = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+humansize = "2.1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.17"
