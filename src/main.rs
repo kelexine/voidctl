@@ -77,7 +77,11 @@ struct CleanArgs {
 #[derive(Subcommand)]
 enum CleanCommands {
     /// Scan and report reclaimable space across the machine
-    Scan,
+    Scan {
+        /// Display all targets without truncation
+        #[arg(short, long)]
+        all: bool,
+    },
     /// Interactively select and delete cleanable targets
     Select,
 }
@@ -194,9 +198,9 @@ fn handle_clean(args: CleanArgs) -> Result<()> {
     let config = load_config().context("Failed to load configuration")?;
 
     match args.command {
-        CleanCommands::Scan => {
+        CleanCommands::Scan { all } => {
             let report = scan_hygiene(&config.clean);
-            print_clean_report(&report);
+            print_clean_report(&report, all);
         }
         CleanCommands::Select => {
             let report = scan_hygiene(&config.clean);

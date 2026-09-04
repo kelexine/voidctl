@@ -156,16 +156,6 @@ pub fn default_scan_roots() -> Vec<PathBuf> {
             roots.push(user_trash);
         }
 
-        let user_dev = home_path.join("dev");
-        if user_dev.exists() {
-            roots.push(user_dev);
-        }
-
-        let user_projects = home_path.join("projects");
-        if user_projects.exists() {
-            roots.push(user_projects);
-        }
-
         let dotfiles_backup = home_path.join(".dotfiles_backup");
         if dotfiles_backup.exists() {
             roots.push(dotfiles_backup);

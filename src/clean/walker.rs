@@ -11,7 +11,7 @@ use crate::clean::classifier::{CleanCategory, CleanItem, CleanTarget};
 use crate::clean::privilege::{ELEVATED_SYSTEM_ROOTS, is_elevated, is_writable};
 use crate::config::CleanConfig;
 use ignore::{WalkBuilder, WalkState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -96,6 +96,19 @@ pub fn scan_hygiene(config: &CleanConfig) -> CleanReport {
         .cloned()
         .collect();
 
+    // Exclude development workspaces explicitly (out of bounds for hygiene cleaner)
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(&home);
+        let dev_dir = home_path.join("dev");
+        let projects_dir = home_path.join("projects");
+        roots.retain(|r| {
+            r != &dev_dir
+                && r != &projects_dir
+                && !r.starts_with(&dev_dir)
+                && !r.starts_with(&projects_dir)
+        });
+    }
+
     if elevated {
         for extra in ELEVATED_SYSTEM_ROOTS {
             let p = PathBuf::from(extra);
@@ -147,181 +160,198 @@ pub fn scan_hygiene(config: &CleanConfig) -> CleanReport {
         targets.push(journal_target);
     }
 
-    // 3. Setup WalkBuilder for general tree scan (dev targets, stale logs, temp dirs)
-    let first_root = roots[0].clone();
-    let mut builder = WalkBuilder::new(&first_root);
-    for r in &roots[1..] {
-        builder.add(r);
+    #[derive(Default)]
+    struct LooseBucket {
+        size_bytes: u64,
+        count: usize,
+        files: Vec<PathBuf>,
     }
 
-    for exc in &config.exclude {
-        builder.add_custom_ignore_filename(exc);
-    }
+    type LooseBucketMap = HashMap<(CleanCategory, PathBuf), LooseBucket>;
 
-    builder.hidden(false).parents(false).git_ignore(true);
+    // 3. Setup WalkBuilder for general tree scan on unhandled roots (temp dirs, custom roots)
+    let unhandled_roots: Vec<PathBuf> = roots
+        .iter()
+        .filter(|r| !handled_paths.contains(*r))
+        .cloned()
+        .collect();
 
-    let found_targets = Arc::new(Mutex::new(Vec::new()));
     let tracker = Arc::new(Mutex::new(HotspotTracker::new(MAX_HOTSPOTS)));
     let permission_denied = Arc::new(AtomicUsize::new(0));
 
-    let targets_clone = Arc::clone(&found_targets);
-    let tracker_clone = Arc::clone(&tracker);
-    let perm_clone = Arc::clone(&permission_denied);
-    let handled_clone = Arc::new(handled_paths);
-    let age_threshold = config.age_threshold_days;
+    if !unhandled_roots.is_empty() {
+        let first_root = unhandled_roots[0].clone();
+        let mut builder = WalkBuilder::new(&first_root);
+        for r in &unhandled_roots[1..] {
+            builder.add(r);
+        }
 
-    builder.build_parallel().run(|| {
-        let targets_ref = Arc::clone(&targets_clone);
-        let tracker = Arc::clone(&tracker_clone);
-        let perm = Arc::clone(&perm_clone);
-        let handled = Arc::clone(&handled_clone);
+        for exc in &config.exclude {
+            builder.add_custom_ignore_filename(exc);
+        }
 
-        Box::new(move |result| match result {
-            Ok(entry) => {
-                let path = entry.path();
+        builder.hidden(false).parents(false).git_ignore(true);
 
-                // Skip directories/files already covered by specialized targets
-                for h in handled.iter() {
-                    if path.starts_with(h) {
-                        return WalkState::Skip;
-                    }
-                }
+        let found_targets = Arc::new(Mutex::new(Vec::new()));
+        let loose_buckets: Arc<Mutex<LooseBucketMap>> = Arc::new(Mutex::new(HashMap::new()));
 
-                let meta = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(err) => {
-                        if err
-                            .io_error()
-                            .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-                        {
-                            perm.fetch_add(1, Ordering::Relaxed);
+        let targets_clone = Arc::clone(&found_targets);
+        let tracker_clone = Arc::clone(&tracker);
+        let perm_clone = Arc::clone(&permission_denied);
+        let handled_clone = Arc::new(handled_paths);
+        let loose_clone = Arc::clone(&loose_buckets);
+        let age_threshold = config.age_threshold_days;
+
+        builder.build_parallel().run(|| {
+            let targets_ref = Arc::clone(&targets_clone);
+            let tracker = Arc::clone(&tracker_clone);
+            let perm = Arc::clone(&perm_clone);
+            let handled = Arc::clone(&handled_clone);
+            let loose = Arc::clone(&loose_clone);
+
+            Box::new(move |result| match result {
+                Ok(entry) => {
+                    let path = entry.path();
+
+                    // Skip directories/files already covered by specialized targets
+                    for h in handled.iter() {
+                        if path.starts_with(h) {
+                            return WalkState::Skip;
                         }
-                        return WalkState::Continue;
                     }
-                };
 
-                if meta.is_dir() {
-                    if is_build_artifact_dir(path) {
-                        let (size, count) = count_and_size_dir(path);
-                        let title = format_build_target_title(path);
-                        let requires_elevation = !is_writable(path);
-
-                        if let Ok(mut list) = targets_ref.lock() {
-                            list.push(CleanTarget::new(
-                                title,
-                                path.to_path_buf(),
-                                CleanCategory::Artifacts,
-                                size,
-                                count.max(1),
-                                requires_elevation,
-                                true,
-                                Vec::new(),
-                                format!("Build artifact tree: {}", path.display()),
-                            ));
+                    let meta = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(err) => {
+                            if err
+                                .io_error()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+                            {
+                                perm.fetch_add(1, Ordering::Relaxed);
+                            }
+                            return WalkState::Continue;
                         }
-                        return WalkState::Skip;
-                    }
+                    };
 
-                    // Special temp caches (e.g. ghidra packed-db-cache)
-                    let p_str = path.to_string_lossy();
-                    if p_str.contains("packed-db-cache") || p_str.contains("ghidra") {
-                        let (size, count) = count_and_size_dir(path);
-                        if count > 0 {
+                    if meta.is_dir() {
+                        if is_build_artifact_dir(path) {
+                            let (size, count) = count_and_size_dir(path);
+                            let title = format_build_target_title(path);
+                            let requires_elevation = !is_writable(path);
+
                             if let Ok(mut list) = targets_ref.lock() {
                                 list.push(CleanTarget::new(
-                                    "Ghidra Database Cache".to_string(),
+                                    title,
                                     path.to_path_buf(),
-                                    CleanCategory::LogsCache,
+                                    CleanCategory::Artifacts,
                                     size,
-                                    count,
-                                    !is_writable(path),
+                                    count.max(1),
+                                    requires_elevation,
                                     true,
                                     Vec::new(),
-                                    "Temporary Ghidra unpacked database cache".to_string(),
+                                    format!("Build artifact tree: {}", path.display()),
                                 ));
                             }
                             return WalkState::Skip;
                         }
-                    }
-                } else if meta.is_file() {
-                    let size = meta.len();
-                    if let Ok(mut tr) = tracker.lock() {
-                        tr.observe(path, size);
-                    }
 
-                    if is_build_artifact_file(path) {
-                        if let Ok(mut list) = targets_ref.lock() {
-                            list.push(CleanTarget::new(
-                                format!(
-                                    "Compiled artifact: {}",
-                                    path.file_name().unwrap().to_string_lossy()
-                                ),
-                                path.to_path_buf(),
-                                CleanCategory::Artifacts,
-                                size,
-                                1,
-                                !is_writable(path),
-                                false,
-                                vec![path.to_path_buf()],
-                                "Compiled bytecode artifact".to_string(),
-                            ));
+                        // Special temp caches (e.g. ghidra packed-db-cache)
+                        let p_str = path.to_string_lossy();
+                        if p_str.contains("packed-db-cache") || p_str.contains("ghidra") {
+                            let (size, count) = count_and_size_dir(path);
+                            if count > 0 {
+                                if let Ok(mut list) = targets_ref.lock() {
+                                    list.push(CleanTarget::new(
+                                        "Ghidra Database Cache".to_string(),
+                                        path.to_path_buf(),
+                                        CleanCategory::LogsCache,
+                                        size,
+                                        count,
+                                        !is_writable(path),
+                                        true,
+                                        Vec::new(),
+                                        "Temporary Ghidra unpacked database cache".to_string(),
+                                    ));
+                                }
+                                return WalkState::Skip;
+                            }
                         }
-                    } else if is_stale_log_file(path, &meta, age_threshold) {
-                        let reason = format!("Log older than {age_threshold} days");
-                        if let Ok(mut list) = targets_ref.lock() {
-                            list.push(CleanTarget::new(
-                                format!(
-                                    "Stale log: {}",
-                                    path.file_name().unwrap().to_string_lossy()
-                                ),
-                                path.to_path_buf(),
-                                CleanCategory::LogsCache,
-                                size,
-                                1,
-                                !is_writable(path),
-                                false,
-                                vec![path.to_path_buf()],
-                                reason,
-                            ));
+                    } else if meta.is_file() {
+                        let size = meta.len();
+                        if let Ok(mut tr) = tracker.lock() {
+                            tr.observe(path, size);
                         }
-                    } else if is_stale_cache_entry(path, &meta, age_threshold) {
-                        let reason = format!("Cache item older than {age_threshold} days");
-                        if let Ok(mut list) = targets_ref.lock() {
-                            list.push(CleanTarget::new(
-                                format!(
-                                    "Stale cache: {}",
-                                    path.file_name().unwrap().to_string_lossy()
-                                ),
-                                path.to_path_buf(),
-                                CleanCategory::LogsCache,
-                                size,
-                                1,
-                                !is_writable(path),
-                                false,
-                                vec![path.to_path_buf()],
-                                reason,
-                            ));
+
+                        let base_dir = path
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| path.to_path_buf());
+
+                        if is_build_artifact_file(path) {
+                            if let Ok(mut map) = loose.lock() {
+                                let entry =
+                                    map.entry((CleanCategory::Artifacts, base_dir)).or_default();
+                                entry.size_bytes += size;
+                                entry.count += 1;
+                                entry.files.push(path.to_path_buf());
+                            }
+                        } else if (is_stale_log_file(path, &meta, age_threshold)
+                            || is_stale_cache_entry(path, &meta, age_threshold))
+                            && let Ok(mut map) = loose.lock()
+                        {
+                            let entry =
+                                map.entry((CleanCategory::LogsCache, base_dir)).or_default();
+                            entry.size_bytes += size;
+                            entry.count += 1;
+                            entry.files.push(path.to_path_buf());
                         }
                     }
+                    WalkState::Continue
                 }
-                WalkState::Continue
-            }
-            Err(err) => {
-                if err
-                    .io_error()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-                {
-                    perm.fetch_add(1, Ordering::Relaxed);
+                Err(err) => {
+                    if err
+                        .io_error()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+                    {
+                        perm.fetch_add(1, Ordering::Relaxed);
+                    }
+                    WalkState::Continue
                 }
-                WalkState::Continue
-            }
-        })
-    });
+            })
+        });
 
-    let extra_targets = targets_clone
-        .lock()
-        .map_or_else(|_| Vec::new(), |guard| guard.clone());
-    targets.extend(extra_targets);
+        let extra_targets = targets_clone
+            .lock()
+            .map_or_else(|_| Vec::new(), |guard| guard.clone());
+        targets.extend(extra_targets);
+
+        if let Ok(buckets) = loose_buckets.lock() {
+            for ((category, base_dir), bucket) in buckets.iter() {
+                if bucket.count > 0 {
+                    let dir_name = base_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("temporary");
+                    let title = match category {
+                        CleanCategory::Artifacts => format!("Compiled Artifacts ({dir_name})"),
+                        CleanCategory::LogsCache => format!("Stale Logs & Temp ({dir_name})"),
+                        _ => format!("Loose Files ({})", base_dir.display()),
+                    };
+                    targets.push(CleanTarget::new(
+                        title,
+                        base_dir.clone(),
+                        *category,
+                        bucket.size_bytes,
+                        bucket.count,
+                        !is_writable(base_dir),
+                        false,
+                        bucket.files.clone(),
+                        format!("{} loose {category} file(s)", bucket.count),
+                    ));
+                }
+            }
+        }
+    }
 
     // 4. Hotspots: only track standalone large files not already included in targets
     let hotspots = tracker
@@ -356,16 +386,31 @@ pub fn scan_hygiene(config: &CleanConfig) -> CleanReport {
         }
     }
 
+    // Sort targets by size descending so top reclaimable targets are prioritized
+    targets.sort_by_key(|a| std::cmp::Reverse(a.size_bytes));
+
     // 5. Build legacy CleanItem list for backwards compatibility
     let mut items: Vec<CleanItem> = Vec::new();
     for t in &targets {
-        items.push(CleanItem::new(
-            t.path.clone(),
-            t.size_bytes,
-            t.category,
-            t.reason.clone(),
-            t.is_tree,
-        ));
+        if !t.files.is_empty() {
+            for f in &t.files {
+                items.push(CleanItem::new(
+                    f.clone(),
+                    t.size_bytes / (t.files.len() as u64).max(1),
+                    t.category,
+                    t.reason.clone(),
+                    false,
+                ));
+            }
+        } else {
+            items.push(CleanItem::new(
+                t.path.clone(),
+                t.size_bytes,
+                t.category,
+                t.reason.clone(),
+                t.is_tree,
+            ));
+        }
     }
 
     CleanReport {

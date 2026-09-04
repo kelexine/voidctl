@@ -8,7 +8,7 @@ use crate::drift::links::LinkRecord;
 use humansize::{DECIMAL, format_size};
 
 /// Formats and prints a clean scan report.
-pub fn print_clean_report(report: &CleanReport) {
+pub fn print_clean_report(report: &CleanReport, show_all: bool) {
     if report.targets.is_empty() && report.items.is_empty() {
         println!("No reclaimable targets found.");
         print_clean_footer(report);
@@ -22,7 +22,15 @@ pub fn print_clean_report(report: &CleanReport) {
     println!("{}", "-".repeat(105));
 
     if !report.targets.is_empty() {
-        for target in &report.targets {
+        let max_display = 25;
+        let should_truncate = !show_all && report.targets.len() > max_display;
+        let displayed_targets = if should_truncate {
+            &report.targets[..max_display]
+        } else {
+            &report.targets[..]
+        };
+
+        for target in displayed_targets {
             let size_str = format_size(target.size_bytes, DECIMAL);
             let title_str = truncate_path(&target.title, 36);
             let count_str = if target.item_count > 1 {
@@ -45,6 +53,30 @@ pub fn print_clean_report(report: &CleanReport) {
                 count_str,
                 size_str,
                 notes
+            );
+        }
+
+        if should_truncate {
+            let remaining_count = report.targets.len() - max_display;
+            let remaining_size: u64 = report.targets[max_display..]
+                .iter()
+                .map(|t| t.size_bytes)
+                .sum();
+            let remaining_items: usize = report.targets[max_display..]
+                .iter()
+                .map(|t| t.item_count)
+                .sum();
+            let count_str = if remaining_items > 0 {
+                remaining_items.to_string()
+            } else {
+                "tree".to_string()
+            };
+            println!(
+                "{:<16} {:<36} {:>8} {:>10}  Run 'voidctl clean scan --all' to list all",
+                "...",
+                format!("... and {remaining_count} more targets"),
+                count_str,
+                format_size(remaining_size, DECIMAL)
             );
         }
     } else {
