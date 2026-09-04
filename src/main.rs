@@ -4,9 +4,10 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use colored::Colorize;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use voidctl::clean::{interactive_select_and_clean, scan_hygiene};
+use voidctl::clean::{CleanCategory, interactive_select_and_clean, scan_hygiene};
 use voidctl::config::{load_config, save_config};
 use voidctl::drift::{audit_drift, verify_symlinks};
 use voidctl::jump::{add_alias, execute_jump, list_aliases};
@@ -83,7 +84,11 @@ enum CleanCommands {
         all: bool,
     },
     /// Interactively select and delete cleanable targets
-    Select,
+    Select {
+        /// Filter by specific category (e.g. 'package-cache', 'logs-cache', 'thumbnails')
+        #[arg(short, long)]
+        category: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -202,9 +207,22 @@ fn handle_clean(args: CleanArgs) -> Result<()> {
             let report = scan_hygiene(&config.clean);
             print_clean_report(&report, all);
         }
-        CleanCommands::Select => {
+        CleanCommands::Select { category } => {
+            let cat = match category {
+                Some(s) => match s.parse::<CleanCategory>() {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        eprintln!("{}", e.red());
+                        let valid: Vec<String> =
+                            CleanCategory::all().iter().map(|c| c.to_string()).collect();
+                        eprintln!("Valid categories: {}", valid.join(", "));
+                        return Ok(());
+                    }
+                },
+                None => None,
+            };
             let report = scan_hygiene(&config.clean);
-            interactive_select_and_clean(&report)?;
+            interactive_select_and_clean(&report, cat)?;
         }
     }
     Ok(())

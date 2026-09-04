@@ -42,6 +42,40 @@ impl fmt::Display for CleanCategory {
     }
 }
 
+impl std::str::FromStr for CleanCategory {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let normalized = s.trim().to_lowercase().replace(['-', '_', ' '], "");
+        match normalized.as_str() {
+            "packagecache" | "package" | "packages" | "pkg" => Ok(Self::PackageCache),
+            "artifacts" | "artifact" | "build" | "buildartifacts" => Ok(Self::Artifacts),
+            "thumbnails" | "thumbnail" | "thumbs" => Ok(Self::Thumbnails),
+            "trash" | "trashbin" | "usertrash" => Ok(Self::Trash),
+            "backups" | "backup" | "dotfilesbackups" => Ok(Self::Backups),
+            "logscache" | "logs" | "cache" | "log" => Ok(Self::LogsCache),
+            "hotspots" | "hotspot" | "diskhotspots" => Ok(Self::Hotspots),
+            _ => Err(format!("Unknown cleanup category: '{s}'")),
+        }
+    }
+}
+
+impl CleanCategory {
+    /// Returns all known categories.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::PackageCache,
+            Self::LogsCache,
+            Self::Thumbnails,
+            Self::Artifacts,
+            Self::Trash,
+            Self::Backups,
+            Self::Hotspots,
+        ]
+    }
+}
+
 /// An aggregated cleanup target presented to the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanTarget {
