@@ -50,6 +50,23 @@ pub enum ConfigError {
     },
 }
 
+/// Queries the passwd database via libc for a given username's home directory.
+fn query_passwd_home(user: &str) -> Option<PathBuf> {
+    let c_name = std::ffi::CString::new(user).ok()?;
+    // SAFETY: getpwnam is standard POSIX querying the system passwd database.
+    let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
+    if pw.is_null() {
+        return None;
+    }
+    let dir_ptr = unsafe { (*pw).pw_dir };
+    if dir_ptr.is_null() {
+        return None;
+    }
+    let dir_cstr = unsafe { std::ffi::CStr::from_ptr(dir_ptr) };
+    let path = PathBuf::from(dir_cstr.to_str().ok()?);
+    if path.exists() { Some(path) } else { None }
+}
+
 /// Returns the effective user home directory, prioritizing SUDO_USER if invoked under sudo.
 #[must_use]
 pub fn resolve_home_dir() -> Option<PathBuf> {
@@ -57,6 +74,9 @@ pub fn resolve_home_dir() -> Option<PathBuf> {
         && !sudo_user.is_empty()
         && sudo_user != "root"
     {
+        if let Some(home) = query_passwd_home(&sudo_user) {
+            return Some(home);
+        }
         let candidate = PathBuf::from(format!("/home/{sudo_user}"));
         if candidate.exists() {
             return Some(candidate);
