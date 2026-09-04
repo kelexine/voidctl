@@ -137,7 +137,7 @@ fn handle_jump(args: JumpArgs) -> Result<()> {
     if let Some(alias) = args.alias {
         let path = execute_jump(&config, &alias)?;
         // Pure stdout for shell wrapper `j` (e.g. cd "$target")
-        print!("{}", path.display());
+        println!("{}", path.display());
         return Ok(());
     }
 
