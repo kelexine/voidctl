@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use voidctl::clean::{CleanCategory, interactive_select_and_clean, scan_hygiene};
 use voidctl::config::{load_config, save_config};
 use voidctl::drift::{audit_drift, verify_symlinks};
-use voidctl::jump::{add_alias, execute_jump, list_aliases};
+use voidctl::jump::{add_alias, execute_jump, generate_init_script, list_aliases};
 use voidctl::report::{print_clean_report, print_drift_report, print_symlink_records};
 use voidctl::runner::{add_command, execute_command, list_commands, resolve_command};
 
@@ -53,6 +53,9 @@ struct JumpArgs {
     /// List all registered jump aliases
     #[arg(long)]
     list: bool,
+    /// Generate shell wrapper script and completion (zsh, bash, fish)
+    #[arg(long, value_name = "SHELL")]
+    init: Option<String>,
 }
 
 #[derive(Args)]
@@ -135,6 +138,12 @@ fn run_cli(cli: Cli) -> Result<u8> {
 }
 
 fn handle_jump(args: JumpArgs) -> Result<()> {
+    if let Some(shell) = args.init {
+        let script = generate_init_script(&shell)?;
+        print!("{script}");
+        return Ok(());
+    }
+
     let mut config = load_config().context("Failed to load configuration")?;
 
     if let Some(pair) = args.add {
@@ -160,7 +169,7 @@ fn handle_jump(args: JumpArgs) -> Result<()> {
         return Ok(());
     }
 
-    bail!("No jump action specified. Use 'voidctl jump <alias>', '--add', or '--list'.");
+    bail!("No jump action specified. Use 'voidctl jump <alias>', '--init', '--add', or '--list'.");
 }
 
 fn handle_run(args: RunArgs) -> Result<u8> {

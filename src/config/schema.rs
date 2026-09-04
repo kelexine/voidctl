@@ -143,9 +143,7 @@ impl Default for DriftConfig {
 pub fn default_scan_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = PathBuf::from(&home);
-
+    if let Some(home_path) = crate::config::resolve_home_dir() {
         let user_cache = home_path.join(".cache");
         if user_cache.exists() {
             roots.push(user_cache);
@@ -191,12 +189,12 @@ pub fn default_exclude() -> Vec<String> {
 /// Returns default dotfiles directory located at ~/dotfiles or ~/.dotfiles.
 #[must_use]
 pub fn default_dotfiles_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        let standard_dotfiles = PathBuf::from(&home).join("dotfiles");
+    if let Some(home) = crate::config::resolve_home_dir() {
+        let standard_dotfiles = home.join("dotfiles");
         if standard_dotfiles.exists() {
             return standard_dotfiles;
         }
-        PathBuf::from(home).join(".dotfiles")
+        home.join(".dotfiles")
     } else {
         PathBuf::from("dotfiles")
     }

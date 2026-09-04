@@ -330,6 +330,28 @@ fn delete_single_path_target(target: &CleanTarget, summary: &mut DeletionSummary
         return false;
     }
 
+    if target.path == std::path::Path::new("/var/log/journal") {
+        match std::process::Command::new("journalctl")
+            .args(["--vacuum-time=14d"])
+            .status()
+        {
+            Ok(status) if status.success() => return true,
+            Ok(status) => {
+                summary.failures.push((
+                    target.path.clone(),
+                    format!("journalctl --vacuum-time=14d exited with {status}"),
+                ));
+                return false;
+            }
+            Err(err) => {
+                summary
+                    .failures
+                    .push((target.path.clone(), err.to_string()));
+                return false;
+            }
+        }
+    }
+
     let res = if target.path.is_dir() {
         fs::remove_dir_all(&target.path)
     } else {

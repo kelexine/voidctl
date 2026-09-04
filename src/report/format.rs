@@ -242,7 +242,7 @@ fn print_clean_footer(report: &CleanReport) {
 
 /// Checks if a given path resides inside the user home directory.
 fn is_home_path(path: &Path) -> bool {
-    if let Ok(home) = std::env::var("HOME")
+    if let Some(home) = crate::config::resolve_home_dir()
         && path.starts_with(&home)
     {
         return true;

@@ -97,8 +97,7 @@ pub fn scan_hygiene(config: &CleanConfig) -> CleanReport {
         .collect();
 
     // Exclude development workspaces explicitly (out of bounds for hygiene cleaner)
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = PathBuf::from(&home);
+    if let Some(home_path) = crate::config::resolve_home_dir() {
         let dev_dir = home_path.join("dev");
         let projects_dir = home_path.join("projects");
         roots.retain(|r| {
@@ -155,7 +154,7 @@ pub fn scan_hygiene(config: &CleanConfig) -> CleanReport {
         }
     }
 
-    if elevated && let Some(journal_target) = scan_journal_logs() {
+    if let Some(journal_target) = scan_journal_logs() {
         handled_paths.insert(journal_target.path.clone());
         targets.push(journal_target);
     }
@@ -749,27 +748,95 @@ fn scan_dotfiles_backups(backup_dir: &Path, age_threshold: u64) -> Vec<CleanTarg
     targets
 }
 
-/// Scans systemd journal logs when elevated.
+/// Parses human size string (e.g. "52.4M", "1.2G", "800K") into bytes.
+fn parse_human_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let num_end = s.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+    let (num_part, unit_part) = s.split_at(num_end);
+    let val: f64 = num_part.parse().ok()?;
+    let unit = unit_part.to_uppercase();
+
+    let multiplier = if unit.starts_with('K') {
+        1024.0
+    } else if unit.starts_with('M') {
+        1024.0 * 1024.0
+    } else if unit.starts_with('G') {
+        1024.0 * 1024.0 * 1024.0
+    } else if unit.starts_with('T') {
+        1024.0 * 1024.0 * 1024.0 * 1024.0
+    } else {
+        1.0
+    };
+
+    Some((val * multiplier) as u64)
+}
+
+/// Parses the output of `journalctl --disk-usage`.
+fn parse_journal_disk_usage(output: &str) -> Option<u64> {
+    let take_up = output.find("take up ")?;
+    let rest = &output[take_up + "take up ".len()..];
+    let size_token = rest.split_whitespace().next()?;
+    parse_human_size(size_token)
+}
+
+/// Scans systemd journal logs using /var/log/journal and journalctl --disk-usage.
 fn scan_journal_logs() -> Option<CleanTarget> {
     let journal_dir = Path::new("/var/log/journal");
-    if !journal_dir.exists() {
-        return None;
+    if journal_dir.exists() {
+        let (size, count) = count_and_size_dir(journal_dir);
+        if size > 0 {
+            return Some(CleanTarget::new(
+                "Systemd Journal Logs".to_string(),
+                journal_dir.to_path_buf(),
+                CleanCategory::LogsCache,
+                size,
+                count.max(1),
+                !is_writable(journal_dir),
+                false,
+                Vec::new(),
+                "Archived journals (vacuum with: sudo journalctl --vacuum-time=14d)".to_string(),
+            ));
+        }
     }
 
-    let (size, count) = count_and_size_dir(journal_dir);
-    if count == 0 {
-        return None;
+    if let Ok(output) = std::process::Command::new("journalctl")
+        .arg("--disk-usage")
+        .output()
+        && output.status.success()
+    {
+        let out_str = String::from_utf8_lossy(&output.stdout);
+        if let Some(bytes) = parse_journal_disk_usage(&out_str)
+            && bytes > 0
+        {
+            return Some(CleanTarget::new(
+                "Systemd Journal Logs".to_string(),
+                journal_dir.to_path_buf(),
+                CleanCategory::LogsCache,
+                bytes,
+                1,
+                true,
+                false,
+                Vec::new(),
+                "Archived journals (vacuum with: sudo journalctl --vacuum-time=14d)".to_string(),
+            ));
+        }
     }
 
-    Some(CleanTarget::new(
-        "Systemd Journal Logs".to_string(),
-        journal_dir.to_path_buf(),
-        CleanCategory::LogsCache,
-        size,
-        count,
-        !is_writable(journal_dir),
-        false,
-        Vec::new(),
-        format!("{count} journal log files"),
-    ))
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_human_size_and_journal_output() {
+        assert_eq!(parse_human_size("1024K"), Some(1024 * 1024));
+        assert_eq!(parse_human_size("50M"), Some(50 * 1024 * 1024));
+        assert_eq!(parse_human_size("2G"), Some(2 * 1024 * 1024 * 1024));
+
+        let sample = "Archived and active journals take up 52.4M in the file system.";
+        let parsed = parse_journal_disk_usage(sample).expect("parsed journal disk usage");
+        assert!(parsed > 50 * 1024 * 1024);
+    }
 }

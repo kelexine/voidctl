@@ -50,6 +50,21 @@ pub enum ConfigError {
     },
 }
 
+/// Returns the effective user home directory, prioritizing SUDO_USER if invoked under sudo.
+#[must_use]
+pub fn resolve_home_dir() -> Option<PathBuf> {
+    if let Ok(sudo_user) = std::env::var("SUDO_USER")
+        && !sudo_user.is_empty()
+        && sudo_user != "root"
+    {
+        let candidate = PathBuf::from(format!("/home/{sudo_user}"));
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    std::env::var("HOME").ok().map(PathBuf::from)
+}
+
 /// Resolves the path to the voidctl configuration file.
 ///
 /// Priority:
@@ -60,11 +75,8 @@ pub fn resolve_config_path() -> Result<PathBuf, ConfigError> {
         return Ok(PathBuf::from(env_path));
     }
 
-    let home = std::env::var("HOME").map_err(|_| ConfigError::NoHomeDir)?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("voidctl")
-        .join("voidctl.toml"))
+    let home = resolve_home_dir().ok_or(ConfigError::NoHomeDir)?;
+    Ok(home.join(".config").join("voidctl").join("voidctl.toml"))
 }
 
 /// Loads the configuration from the resolved path or returns default config.
@@ -145,5 +157,11 @@ mod tests {
 
         let loaded = load_from_path(&config_file).expect("failed to load config");
         assert_eq!(config, loaded);
+    }
+
+    #[test]
+    fn test_resolve_home_dir() {
+        let home = resolve_home_dir();
+        assert!(home.is_some());
     }
 }
