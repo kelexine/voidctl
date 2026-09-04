@@ -3,7 +3,7 @@
 // Purpose: CLI entry point and Clap subcommand routing for voidctl
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voidctl::clean::{interactive_select_and_clean, scan_hygiene};
@@ -35,6 +35,11 @@ enum Commands {
     Clean(CleanArgs),
     /// Dotfiles symlink integrity and git repository drift
     Drift(DriftArgs),
+    /// Generate shell completion scripts (bash, zsh, fish)
+    Completions {
+        /// Target shell for autocompletion
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Args)]
@@ -112,6 +117,11 @@ fn run_cli(cli: Cli) -> Result<u8> {
         Commands::Run(args) => handle_run(args),
         Commands::Clean(args) => handle_clean(args).map(|_| 0),
         Commands::Drift(args) => handle_drift(args).map(|_| 0),
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "voidctl", &mut std::io::stdout());
+            Ok(0)
+        }
     }
 }
 
