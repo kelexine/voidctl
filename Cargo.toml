@@ -1,6 +1,6 @@
 [package]
 name = "voidctl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["kelexine <https://github.com/kelexine>"]
 description = "Unified personal operations CLI for TheVoid"

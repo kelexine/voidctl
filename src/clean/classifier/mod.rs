@@ -46,14 +46,14 @@ impl std::str::FromStr for CleanCategory {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let normalized = s.trim().to_lowercase().replace(['-', '_', ' '], "");
+        let normalized = s.trim().to_lowercase().replace(['-', '_', ' ', '&'], "");
         match normalized.as_str() {
             "packagecache" | "package" | "packages" | "pkg" => Ok(Self::PackageCache),
             "artifacts" | "artifact" | "build" | "buildartifacts" => Ok(Self::Artifacts),
             "thumbnails" | "thumbnail" | "thumbs" => Ok(Self::Thumbnails),
             "trash" | "trashbin" | "usertrash" => Ok(Self::Trash),
             "backups" | "backup" | "dotfilesbackups" => Ok(Self::Backups),
-            "logscache" | "logs" | "cache" | "log" => Ok(Self::LogsCache),
+            "logscache" | "logs" | "cache" | "log" | "logsandcache" => Ok(Self::LogsCache),
             "hotspots" | "hotspot" | "diskhotspots" => Ok(Self::Hotspots),
             _ => Err(format!("Unknown cleanup category: '{s}'")),
         }
@@ -153,5 +153,97 @@ impl CleanItem {
             reason,
             is_dir,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_clean_category_from_str_and_all() {
+        assert_eq!(
+            CleanCategory::from_str("package").expect("parse package"),
+            CleanCategory::PackageCache
+        );
+        assert_eq!(
+            CleanCategory::from_str("pkg").expect("parse pkg"),
+            CleanCategory::PackageCache
+        );
+        assert_eq!(
+            CleanCategory::from_str("package-cache").expect("parse package-cache"),
+            CleanCategory::PackageCache
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("artifacts").expect("parse artifacts"),
+            CleanCategory::Artifacts
+        );
+        assert_eq!(
+            CleanCategory::from_str("build").expect("parse build"),
+            CleanCategory::Artifacts
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("thumbnails").expect("parse thumbnails"),
+            CleanCategory::Thumbnails
+        );
+        assert_eq!(
+            CleanCategory::from_str("thumbs").expect("parse thumbs"),
+            CleanCategory::Thumbnails
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("trash").expect("parse trash"),
+            CleanCategory::Trash
+        );
+        assert_eq!(
+            CleanCategory::from_str("user_trash").expect("parse user_trash"),
+            CleanCategory::Trash
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("backups").expect("parse backups"),
+            CleanCategory::Backups
+        );
+        assert_eq!(
+            CleanCategory::from_str("dotfiles-backups").expect("parse dotfiles-backups"),
+            CleanCategory::Backups
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("logs").expect("parse logs"),
+            CleanCategory::LogsCache
+        );
+        assert_eq!(
+            CleanCategory::from_str("cache").expect("parse cache"),
+            CleanCategory::LogsCache
+        );
+        assert_eq!(
+            CleanCategory::from_str("Logs & Cache").expect("parse Logs & Cache"),
+            CleanCategory::LogsCache
+        );
+
+        assert_eq!(
+            CleanCategory::from_str("hotspots").expect("parse hotspots"),
+            CleanCategory::Hotspots
+        );
+        assert_eq!(
+            CleanCategory::from_str("disk_hotspots").expect("parse disk_hotspots"),
+            CleanCategory::Hotspots
+        );
+
+        assert!(CleanCategory::from_str("unknown_category").is_err());
+
+        let all_cats = CleanCategory::all();
+        assert_eq!(all_cats.len(), 7);
+        assert!(all_cats.contains(&CleanCategory::PackageCache));
+        assert!(all_cats.contains(&CleanCategory::Artifacts));
+        assert!(all_cats.contains(&CleanCategory::Thumbnails));
+        assert!(all_cats.contains(&CleanCategory::Trash));
+        assert!(all_cats.contains(&CleanCategory::Backups));
+        assert!(all_cats.contains(&CleanCategory::LogsCache));
+        assert!(all_cats.contains(&CleanCategory::Hotspots));
     }
 }

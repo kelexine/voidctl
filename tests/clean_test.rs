@@ -64,3 +64,31 @@ fn test_clean_scan_hierarchies() {
         .expect("pyc should be classified");
     assert_eq!(pyc_item.category, CleanCategory::Artifacts);
 }
+
+#[test]
+fn test_clean_scan_node_modules() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let js_project = root.join("node_prj");
+    fs::create_dir_all(&js_project).expect("create js project");
+    File::create(js_project.join("package.json")).expect("create package.json");
+    let nm_dir = js_project.join("node_modules");
+    fs::create_dir_all(&nm_dir).expect("create node_modules");
+    File::create(nm_dir.join("pkg.js")).expect("create pkg.js");
+
+    let clean_config = CleanConfig {
+        scan_roots: vec![root.to_path_buf()],
+        age_threshold_days: 7,
+        exclude: vec![".git".to_string()],
+        extra_scan_roots: Vec::new(),
+    };
+
+    let report = scan_hygiene(&clean_config);
+    let target = report.targets.iter().find(|t| t.path == nm_dir);
+    assert!(target.is_some());
+    assert_eq!(
+        target.expect("target exists").category,
+        CleanCategory::Artifacts
+    );
+}
