@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2.0"
 anyhow = "1.0"
+globset = "0.4"
 ignore = "0.4"
 inquire = "0.7"
 tracing = "0.1"

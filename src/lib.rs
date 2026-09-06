@@ -8,3 +8,4 @@ pub mod drift;
 pub mod jump;
 pub mod report;
 pub mod runner;
+pub mod search;

@@ -8,11 +8,12 @@ use colored::Colorize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use voidctl::clean::{CleanCategory, interactive_select_and_clean, scan_hygiene};
-use voidctl::config::{load_config, save_config};
+use voidctl::config::{load_config, resolve_home_dir, save_config};
 use voidctl::drift::{audit_drift, verify_symlinks};
 use voidctl::jump::{add_alias, execute_jump, generate_init_script, list_aliases};
 use voidctl::report::{print_clean_report, print_drift_report, print_symlink_records};
 use voidctl::runner::{add_command, execute_command, list_commands, resolve_command};
+use voidctl::search::{SearchOptions, SearchType, execute_search};
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +37,8 @@ enum Commands {
     Clean(CleanArgs),
     /// Dotfiles symlink integrity and git repository drift
     Drift(DriftArgs),
+    /// Search for files or directories by glob pattern
+    Search(SearchArgs),
     /// Generate shell completion scripts (bash, zsh, fish)
     Completions {
         /// Target shell for autocompletion
@@ -108,6 +111,30 @@ enum DriftCommands {
     Links,
 }
 
+#[derive(Args)]
+struct SearchArgs {
+    /// Glob pattern to match against entry names (e.g. '*.log', 'config*')
+    pattern: String,
+    /// Entry type to match: file (f), dir (d), any (a) [default: any]
+    #[arg(short = 't', long = "type", value_name = "TYPE", default_value = "any")]
+    entry_type: String,
+    /// Root directory to search from [default: $HOME]
+    #[arg(short, long, value_name = "PATH")]
+    root: Option<PathBuf>,
+    /// Case-insensitive matching
+    #[arg(short = 'i', long)]
+    case_insensitive: bool,
+    /// Maximum results to display (0 = unlimited)
+    #[arg(short = 'n', long, default_value = "50")]
+    limit: usize,
+    /// Follow symbolic links during traversal
+    #[arg(long)]
+    follow_links: bool,
+    /// Include hidden files and directories
+    #[arg(short = 'H', long)]
+    hidden: bool,
+}
+
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -129,6 +156,7 @@ fn run_cli(cli: Cli) -> Result<u8> {
         Commands::Run(args) => handle_run(args),
         Commands::Clean(args) => handle_clean(args).map(|_| 0),
         Commands::Drift(args) => handle_drift(args).map(|_| 0),
+        Commands::Search(args) => handle_search(args).map(|_| 0),
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             clap_complete::generate(shell, &mut cmd, "voidctl", &mut std::io::stdout());
@@ -136,6 +164,7 @@ fn run_cli(cli: Cli) -> Result<u8> {
         }
     }
 }
+
 
 fn handle_jump(args: JumpArgs) -> Result<()> {
     if let Some(shell) = args.init {
@@ -253,5 +282,28 @@ fn handle_drift(args: DriftArgs) -> Result<()> {
             print_symlink_records(&records);
         }
     }
+    Ok(())
+}
+
+fn handle_search(args: SearchArgs) -> Result<()> {
+    let entry_type: SearchType = args.entry_type.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+
+    let root = match args.root {
+        Some(p) => p,
+        None => resolve_home_dir()
+            .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))),
+    };
+
+    let opts = SearchOptions {
+        pattern: args.pattern,
+        entry_type,
+        root,
+        case_insensitive: args.case_insensitive,
+        limit: args.limit,
+        follow_links: args.follow_links,
+        hidden: args.hidden,
+    };
+
+    execute_search(&opts)?;
     Ok(())
 }
