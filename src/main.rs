@@ -13,7 +13,7 @@ use voidctl::drift::{audit_drift, verify_symlinks};
 use voidctl::jump::{add_alias, execute_jump, generate_init_script, list_aliases};
 use voidctl::report::{print_clean_report, print_drift_report, print_symlink_records};
 use voidctl::runner::{add_command, execute_command, list_commands, resolve_command};
-use voidctl::search::{SearchOptions, SearchType, execute_search};
+use voidctl::search::{CaseMode, SearchOptions, SearchType, execute_search};
 
 #[derive(Parser)]
 #[command(
@@ -113,7 +113,7 @@ enum DriftCommands {
 
 #[derive(Args)]
 struct SearchArgs {
-    /// Glob pattern to match against entry names (e.g. '*.log', 'config*')
+    /// Pattern or glob to match against entry names (e.g. 'siwes', '*.log', 'config*')
     pattern: String,
     /// Entry type to match: file (f), dir (d), any (a) [default: any]
     #[arg(short = 't', long = "type", value_name = "TYPE", default_value = "any")]
@@ -121,9 +121,15 @@ struct SearchArgs {
     /// Root directory to search from [default: $HOME]
     #[arg(short, long, value_name = "PATH")]
     root: Option<PathBuf>,
-    /// Case-insensitive matching
-    #[arg(short = 'i', long)]
+    /// Force case-insensitive matching (overrides default smart-case)
+    #[arg(short = 'i', long, conflicts_with = "case_sensitive")]
     case_insensitive: bool,
+    /// Force case-sensitive matching (overrides default smart-case)
+    #[arg(short = 's', long, conflicts_with = "case_insensitive")]
+    case_sensitive: bool,
+    /// Exact name match (disables automatic substring wrapping)
+    #[arg(short = 'e', long)]
+    exact: bool,
     /// Maximum results to display (0 = unlimited)
     #[arg(short = 'n', long, default_value = "50")]
     limit: usize,
@@ -164,7 +170,6 @@ fn run_cli(cli: Cli) -> Result<u8> {
         }
     }
 }
-
 
 fn handle_jump(args: JumpArgs) -> Result<()> {
     if let Some(shell) = args.init {
@@ -286,7 +291,10 @@ fn handle_drift(args: DriftArgs) -> Result<()> {
 }
 
 fn handle_search(args: SearchArgs) -> Result<()> {
-    let entry_type: SearchType = args.entry_type.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let entry_type: SearchType = args
+        .entry_type
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
 
     let root = match args.root {
         Some(p) => p,
@@ -294,11 +302,20 @@ fn handle_search(args: SearchArgs) -> Result<()> {
             .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))),
     };
 
+    let case_mode = if args.case_insensitive {
+        CaseMode::Insensitive
+    } else if args.case_sensitive {
+        CaseMode::Sensitive
+    } else {
+        CaseMode::Smart
+    };
+
     let opts = SearchOptions {
         pattern: args.pattern,
         entry_type,
         root,
-        case_insensitive: args.case_insensitive,
+        case_mode,
+        exact: args.exact,
         limit: args.limit,
         follow_links: args.follow_links,
         hidden: args.hidden,
